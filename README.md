@@ -5,6 +5,6 @@ A chatbot for F1 enthusiasts who crave the latest updates and for newcomers whoâ
 npm run dev
 ```
 ## Update with your API keys
-- Create a .env file and update your API keys for
+- Create a .env file and update your API keys 
 ## Screenshot 
 ![Image](https://github.com/user-attachments/assets/8938b10b-503f-470d-8ca1-cab58cae4c2a)
