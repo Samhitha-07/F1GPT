@@ -15,7 +15,7 @@ const Home = () => {
         const msg = {
             id: crypto.randomUUID(),
             content: promptText,
-            role: "user"
+            role: "user" as "user"
         }
         append(msg)
     }
