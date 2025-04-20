@@ -1,6 +1,7 @@
-import OpenAI from "openai";
-import { streamText } from "ai"; // updated import
-import { DataAPIClient } from "@datastax/astra-db-ts";
+import { streamText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+import { DataAPIClient } from '@datastax/astra-db-ts';
+import 'dotenv/config';
 
 const {
   ASTRA_DB_NAMESPACE,
@@ -10,60 +11,56 @@ const {
   OPENAI_API_KEY,
 } = process.env;
 
-const openai = new OpenAI({
-  apiKey: OPENAI_API_KEY!,
-});
-
 const client = new DataAPIClient(ASTRA_DB_APPLICATION_TOKEN!);
-
 const db = client.db(ASTRA_DB_API_ENDPOINT!, {
   namespace: ASTRA_DB_NAMESPACE!,
 });
 
-// Retry logic for OpenAI API call in case of quota issues
-async function retryOpenAIRequest(latestMessage: string, retries = 3, delay = 5000) {
+// Retry logic for OpenAI embedding request
+async function retryOpenAIRequest(latestMessage: string, retries = 3, delay = 5000): Promise<number[]> {
+  const OpenAI = (await import('openai')).default;
+  const openaiInstance = new OpenAI({ apiKey: OPENAI_API_KEY! });
+
   try {
-    const embeddingResponse = await openai.embeddings.create({
-      model: "text-embedding-3-small",
+    const embeddingResponse = await openaiInstance.embeddings.create({
+      model: 'text-embedding-3-small',
       input: latestMessage,
-      encoding_format: "float",
+      encoding_format: 'float',
     });
 
     return embeddingResponse.data[0].embedding;
-  } catch (error) {
+  } catch (error: any) {
     if (error.code === 'insufficient_quota' && retries > 0) {
-      console.log("Quota exceeded. Retrying after a delay...");
+      console.warn("Quota exceeded. Retrying after delay...");
       await new Promise(resolve => setTimeout(resolve, delay));
-      return retryOpenAIRequest(latestMessage, retries - 1, delay * 2); // Exponential backoff
+      return retryOpenAIRequest(latestMessage, retries - 1, delay * 2);
     }
-    throw error; // Re-throw if it’s not a quota issue or retries are exhausted
+    throw error;
   }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: Request): Promise<Response> {
+  const { messages } = await req.json();
+  const latestMessage = messages[messages.length - 1]?.content;
+  let docContext = '';
+
   try {
-    const { messages } = await req.json();
-    const latestMessage = messages[messages.length - 1]?.content;
-
-    let docContext = "";
-
-    // Get embeddings with retry logic
     const embedding = await retryOpenAIRequest(latestMessage);
 
     try {
       const collection = await db.collection(ASTRA_DB_COLLECTION!);
       const cursor = collection.find({ $vector: embedding }, { limit: 10 });
       const documents = await cursor.toArray();
-      const docsMap = documents?.map((doc) => doc.text);
-      docContext = docsMap.join("\n\n");
+      const docsMap = documents?.map(doc => doc.text);
+      docContext = docsMap.join('\n\n');
     } catch (error) {
       console.error("Error fetching from Astra DB:", error);
     }
 
-    const template = {
-      role: "system",
+    const systemMessage = {
+      role: 'system' as const,
       content: `You are an AI assistant who knows everything about Formula One.
-Use the below context to augment what you know...
+Use the below context to augment what you know:
 ------ START CONTEXT ------
 ${docContext}
 ------ END CONTEXT ------
@@ -71,13 +68,18 @@ QUESTION: ${latestMessage}`,
     };
 
     const result = await streamText({
-      model: openai.chat,
-      messages: [template, ...messages],
+      model: openai.chat('gpt-4'),
+      messages: [systemMessage, ...messages],
     });
 
-    return result.toDataStreamResponse(); // new method instead of StreamingTextResponse
+    return new Response(result.textStream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+    });
+
   } catch (error) {
-    console.error("Server error:", error);
-    return new Response("Internal Server Error", { status: 500 });
+    console.error('Error in POST handler:', error);
+    return new Response('Internal Server Error', { status: 500 });
   }
 }
